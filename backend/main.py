@@ -2,6 +2,9 @@ import os
 import base64
 import time
 import requests
+import json
+import traceback
+import logging
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -11,6 +14,13 @@ from openai import OpenAI
 from PIL import Image
 import io
 from typing import Optional
+
+# Настройка детального логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # Загружаем переменные окружения
 load_dotenv()
@@ -41,8 +51,12 @@ def analyze_image_and_style(image_data: bytes, style: str) -> dict:
     Анализирует фото пользователя и подбирает одежду в указанном стиле
     """
     try:
+        logger.info(f"🎨 analyze_image_and_style: начало анализа для стиля '{style}'")
+        
         # Конвертируем изображение в base64
+        logger.info("🔄 Конвертация изображения в base64...")
         base64_image = base64.b64encode(image_data).decode('utf-8')
+        logger.info(f"✅ Base64 изображение готово (длина: {len(base64_image)} символов)")
         
         # Создаем промпт для анализа
         prompt = f"""Проанализируй это фото человека и подбери одежду в стиле "{style}".
@@ -60,45 +74,67 @@ def analyze_image_and_style(image_data: bytes, style: str) -> dict:
 
 Стиль должен соответствовать: {style}"""
 
+        logger.info(f"📝 Промпт создан (длина: {len(prompt)} символов)")
+        
         # Отправляем запрос к OpenAI
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{base64_image}"
+        logger.info("🚀 Отправка запроса к OpenAI API (модель: gpt-4o)...")
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{base64_image}"
+                                }
                             }
-                        }
-                    ]
-                }
-            ],
-            max_tokens=2000,
-            response_format={"type": "json_object"}
-        )
+                        ]
+                    }
+                ],
+                max_tokens=2000,
+                response_format={"type": "json_object"}
+            )
+            logger.info("✅ Ответ от OpenAI получен!")
+        except Exception as openai_error:
+            logger.error(f"❌ Ошибка при запросе к OpenAI API: {str(openai_error)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=f"Ошибка OpenAI API: {str(openai_error)}")
         
         # Парсим ответ
-        import json
+        logger.info("🔍 Парсинг ответа OpenAI...")
         
         # Проверяем что ответ не пустой
         if not response.choices or not response.choices[0].message.content:
+            logger.error("❌ OpenAI вернул пустой ответ")
             raise HTTPException(status_code=500, detail="OpenAI вернул пустой ответ. Попробуйте еще раз.")
         
         content = response.choices[0].message.content
+        logger.info(f"✅ Получен контент (длина: {len(content)} символов)")
         
         try:
             result = json.loads(content)
+            logger.info(f"✅ JSON успешно распарсен, ключи: {list(result.keys())}")
         except json.JSONDecodeError as e:
-            print(f"Ошибка парсинга JSON: {content}")
+            logger.error(f"❌ Ошибка парсинга JSON: {str(e)}")
+            logger.error(f"📄 Контент от OpenAI: {content[:500]}...")
             raise HTTPException(status_code=500, detail=f"Ошибка обработки ответа AI: {str(e)}")
         
+        logger.info("✅ analyze_image_and_style: анализ завершен успешно")
         return result
         
+    except HTTPException:
+        raise
     except Exception as e:
+        error_details = traceback.format_exc()
+        logger.error("=" * 80)
+        logger.error("❌ КРИТИЧЕСКАЯ ОШИБКА В analyze_image_and_style")
+        logger.error("=" * 80)
+        logger.error(error_details)
+        logger.error("=" * 80)
         raise HTTPException(status_code=500, detail=f"Ошибка анализа: {str(e)}")
 
 
@@ -521,43 +557,58 @@ async def analyze_photo(
     Анализирует фото и подбирает одежду в указанном стиле
     """
     try:
+        logger.info(f"📥 Получен запрос /api/analyze: файл={photo.filename}, стиль={style}")
+        
         # Проверяем, что файл - изображение
         if not photo.content_type.startswith("image/"):
+            logger.error(f"❌ Неверный тип файла: {photo.content_type}")
             raise HTTPException(status_code=400, detail="Файл должен быть изображением")
         
         # Читаем файл
+        logger.info("📖 Чтение файла...")
         image_data = await photo.read()
+        logger.info(f"✅ Прочитано {len(image_data)} байт")
         
         # Проверяем размер (макс 10MB)
         if len(image_data) > 10 * 1024 * 1024:
+            logger.error(f"❌ Файл слишком большой: {len(image_data)} байт")
             raise HTTPException(status_code=400, detail="Файл слишком большой (макс 10MB)")
         
         # Проверяем, что это валидное изображение
         try:
+            logger.info("🖼️ Валидация изображения...")
             img = Image.open(io.BytesIO(image_data))
+            logger.info(f"✅ Изображение: {img.size}, формат: {img.format}")
             # Оптимизируем размер если нужно
             if img.width > 1024 or img.height > 1024:
+                logger.info("📐 Оптимизация размера...")
                 img.thumbnail((1024, 1024))
                 buffer = io.BytesIO()
                 img.save(buffer, format=img.format or "JPEG")
                 image_data = buffer.getvalue()
+                logger.info(f"✅ Оптимизировано до {len(image_data)} байт")
         except Exception as e:
+            logger.error(f"❌ Невалидное изображение: {str(e)}")
             raise HTTPException(status_code=400, detail="Невалидное изображение")
         
         # Анализируем фото и стиль
+        logger.info(f"🤖 Запуск анализа OpenAI (стиль: {style})...")
         analysis_result = analyze_image_and_style(image_data, style)
+        logger.info("✅ Анализ OpenAI завершен успешно")
         
         # Добавляем ссылки на товары для каждой рекомендации
+        logger.info("🔗 Добавление ссылок на товары...")
         for recommendation in analysis_result.get("recommendations", []):
             search_query = recommendation.get("search_query", "")
             recommendation["shop_links"] = search_products(search_query)
+        logger.info(f"✅ Добавлено ссылок для {len(analysis_result.get('recommendations', []))} рекомендаций")
         
         # Генерируем изображение с одеждой используя NanoBanana (сохраняет ваше лицо!)
         generated_image_url = None
         if "recommendations" in analysis_result and analysis_result["recommendations"]:
-            print("\n" + "="*80)
-            print("🎨 ЗАПУСК ГЕНЕРАЦИИ ИЗОБРАЖЕНИЯ С NANOBANANA API")
-            print("="*80)
+            logger.info("\n" + "="*80)
+            logger.info("🎨 ЗАПУСК ГЕНЕРАЦИИ ИЗОБРАЖЕНИЯ С NANOBANANA API")
+            logger.info("="*80)
             
             generated_image_url = generate_outfit_image(
                 analysis_result.get("person_description", ""),
@@ -568,28 +619,36 @@ async def analyze_photo(
             
             if generated_image_url:
                 analysis_result["generated_image"] = generated_image_url
-                print("\n" + "="*80)
-                print("✅ УСПЕХ! Изображение добавлено в результаты")
-                print(f"🔗 URL: {generated_image_url}")
-                print("="*80 + "\n")
+                logger.info("\n" + "="*80)
+                logger.info("✅ УСПЕХ! Изображение добавлено в результаты")
+                logger.info(f"🔗 URL: {generated_image_url}")
+                logger.info("="*80 + "\n")
             else:
-                print("\n" + "="*80)
-                print("⚠️ ПРЕДУПРЕЖДЕНИЕ: Изображение не было получено")
-                print("💡 Возможные причины:")
-                print("   - Превышено время ожидания (проверьте вручную на сайте)")
-                print("   - Ошибка при обработке")
-                print("   - Недостаточно кредитов")
-                print("📊 Анализ одежды продолжается без изображения...")
-                print("="*80 + "\n")
+                logger.warning("\n" + "="*80)
+                logger.warning("⚠️ ПРЕДУПРЕЖДЕНИЕ: Изображение не было получено")
+                logger.warning("💡 Возможные причины:")
+                logger.warning("   - Превышено время ожидания (проверьте вручную на сайте)")
+                logger.warning("   - Ошибка при обработке")
+                logger.warning("   - Недостаточно кредитов")
+                logger.warning("📊 Анализ одежды продолжается без изображения...")
+                logger.warning("="*80 + "\n")
         
+        logger.info("✅ Запрос обработан успешно!")
         return JSONResponse(content={
             "success": True,
             "data": analysis_result
         })
         
     except HTTPException as he:
+        logger.error(f"❌ HTTP Exception: {he.status_code} - {he.detail}")
         raise he
     except Exception as e:
+        error_details = traceback.format_exc()
+        logger.error("=" * 80)
+        logger.error("❌ КРИТИЧЕСКАЯ ОШИБКА В /api/analyze")
+        logger.error("=" * 80)
+        logger.error(error_details)
+        logger.error("=" * 80)
         raise HTTPException(status_code=500, detail=f"Ошибка сервера: {str(e)}")
 
 
@@ -600,6 +659,149 @@ async def health_check():
         "status": "healthy",
         "openai_configured": bool(os.getenv("OPENAI_API_KEY"))
     }
+
+
+@app.get("/api/debug/env")
+async def debug_env():
+    """🔍 Диагностика: Проверка переменных окружения"""
+    return {
+        "OPENAI_API_KEY": "✅ Установлен" if os.getenv("OPENAI_API_KEY") else "❌ НЕ УСТАНОВЛЕН",
+        "OPENAI_KEY_PREFIX": os.getenv("OPENAI_API_KEY", "")[:20] + "..." if os.getenv("OPENAI_API_KEY") else "N/A",
+        "NANOBANANA_API_KEY": "✅ Установлен" if os.getenv("NANOBANANA_API_KEY") else "❌ НЕ УСТАНОВЛЕН",
+        "IMGUR_CLIENT_ID": "✅ Установлен" if os.getenv("IMGUR_CLIENT_ID") else "⚠️ Используется публичный",
+        "ALLOWED_ORIGINS": os.getenv("ALLOWED_ORIGINS", "не установлен"),
+        "HOST": os.getenv("HOST", "0.0.0.0"),
+        "PORT": os.getenv("PORT", "8000"),
+    }
+
+
+@app.get("/api/debug/openai")
+async def debug_openai():
+    """🔍 Диагностика: Проверка OpenAI API"""
+    try:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            return {
+                "status": "error",
+                "message": "❌ OPENAI_API_KEY не установлен в переменных окружения!",
+                "solution": "Добавьте OPENAI_API_KEY в Railway Variables"
+            }
+        
+        # Пробуем создать клиента
+        test_client = OpenAI(api_key=api_key)
+        
+        # Пробуем простой запрос
+        response = test_client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": "Say 'OK'"}],
+            max_tokens=5
+        )
+        
+        return {
+            "status": "success",
+            "message": "✅ OpenAI API работает отлично!",
+            "model": "gpt-4o",
+            "response": response.choices[0].message.content,
+            "key_prefix": api_key[:20] + "..."
+        }
+        
+    except Exception as e:
+        error_details = traceback.format_exc()
+        logger.error(f"❌ OpenAI API Error: {error_details}")
+        return {
+            "status": "error",
+            "message": f"❌ Ошибка OpenAI API: {str(e)}",
+            "error_type": type(e).__name__,
+            "traceback": error_details,
+            "solution": "Проверьте что OPENAI_API_KEY правильный и действующий на https://platform.openai.com/api-keys"
+        }
+
+
+@app.post("/api/debug/test-analyze")
+async def debug_test_analyze(
+    photo: UploadFile = File(...),
+    style: str = Form(...)
+):
+    """🔍 Диагностика: Тестовый анализ с детальными логами"""
+    try:
+        logger.info("=" * 80)
+        logger.info("🔍 ДИАГНОСТИЧЕСКИЙ АНАЛИЗ ЗАПУЩЕН")
+        logger.info("=" * 80)
+        
+        # Шаг 1: Проверка файла
+        logger.info(f"📄 Получен файл: {photo.filename}")
+        logger.info(f"📄 Content-Type: {photo.content_type}")
+        
+        if not photo.content_type.startswith("image/"):
+            raise HTTPException(status_code=400, detail="Файл должен быть изображением")
+        
+        # Шаг 2: Чтение файла
+        logger.info("📥 Чтение данных изображения...")
+        image_data = await photo.read()
+        logger.info(f"✅ Прочитано {len(image_data)} байт")
+        
+        # Шаг 3: Проверка размера
+        if len(image_data) > 10 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="Файл слишком большой (макс 10MB)")
+        
+        # Шаг 4: Валидация изображения
+        logger.info("🖼️ Валидация изображения...")
+        try:
+            img = Image.open(io.BytesIO(image_data))
+            logger.info(f"✅ Изображение валидно: {img.size}, формат: {img.format}")
+            
+            if img.width > 1024 or img.height > 1024:
+                logger.info("📐 Оптимизация размера...")
+                img.thumbnail((1024, 1024))
+                buffer = io.BytesIO()
+                img.save(buffer, format=img.format or "JPEG")
+                image_data = buffer.getvalue()
+                logger.info(f"✅ Оптимизировано до {len(image_data)} байт")
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Невалидное изображение: {str(e)}")
+        
+        # Шаг 5: Проверка OpenAI
+        logger.info("🤖 Проверка OpenAI API...")
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise HTTPException(status_code=500, detail="OPENAI_API_KEY не установлен!")
+        logger.info(f"✅ API ключ найден: {api_key[:20]}...")
+        
+        # Шаг 6: Анализ
+        logger.info(f"🎨 Запуск анализа в стиле: {style}")
+        analysis_result = analyze_image_and_style(image_data, style)
+        logger.info("✅ Анализ завершен успешно!")
+        
+        logger.info("=" * 80)
+        logger.info("✅ ДИАГНОСТИКА ЗАВЕРШЕНА УСПЕШНО")
+        logger.info("=" * 80)
+        
+        return {
+            "success": True,
+            "message": "✅ Все работает отлично!",
+            "analysis": analysis_result
+        }
+        
+    except HTTPException as he:
+        logger.error(f"❌ HTTP Exception: {he.detail}")
+        raise he
+    except Exception as e:
+        error_details = traceback.format_exc()
+        logger.error("=" * 80)
+        logger.error("❌ КРИТИЧЕСКАЯ ОШИБКА В ДИАГНОСТИКЕ")
+        logger.error("=" * 80)
+        logger.error(error_details)
+        logger.error("=" * 80)
+        
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "traceback": error_details
+            }
+        )
 
 
 if __name__ == "__main__":
