@@ -1,8 +1,9 @@
-import React from 'react';
+import React, { useState } from 'react';
 import './Results.css';
 
 function Results({ data, onReset }) {
   const { analysis, recommendations, style_tips, generated_image } = data;
+  const [imageError, setImageError] = useState(false);
 
   return (
     <div className="results-container">
@@ -18,11 +19,38 @@ function Results({ data, onReset }) {
         <div className="generated-image-section">
           <h3>🎨 Вы в рекомендованной одежде</h3>
           <div className="generated-image-wrapper">
-            <img 
-              src={generated_image} 
-              alt="Вы в новой одежде" 
-              className="generated-image"
-            />
+            {!imageError ? (
+              <>
+                <img 
+                  src={generated_image} 
+                  alt="Вы в новой одежде" 
+                  className="generated-image"
+                  onError={() => setImageError(true)}
+                  crossOrigin="anonymous"
+                />
+                <a 
+                  href={generated_image} 
+                  target="_blank" 
+                  rel="noopener noreferrer"
+                  className="image-direct-link"
+                >
+                  🔗 Открыть в полном размере
+                </a>
+              </>
+            ) : (
+              <div className="image-error">
+                <p>⚠️ Изображение не загрузилось в браузере</p>
+                <p className="error-hint">Возможно, Imgur заблокирован вашим провайдером</p>
+                <a 
+                  href={generated_image} 
+                  target="_blank" 
+                  rel="noopener noreferrer"
+                  className="direct-link-button"
+                >
+                  📸 Открыть изображение напрямую
+                </a>
+              </div>
+            )}
             <p className="image-note">
               ✨ Это AI-визуализация того, как вы будете выглядеть в рекомендованной одежде
             </p>
