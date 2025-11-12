@@ -213,6 +213,9 @@ def upload_image_to_imgur(image_data: bytes) -> str:
             result = response.json()
             if result.get("success"):
                 image_url = result["data"]["link"]
+                # ОБЯЗАТЕЛЬНО используем HTTPS для совместимости с мобильными браузерами!
+                if image_url.startswith("http://"):
+                    image_url = image_url.replace("http://", "https://", 1)
                 print(f"✅ Изображение загружено: {image_url[:60]}...")
                 return image_url
             else:
